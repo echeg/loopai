@@ -1034,11 +1034,27 @@ checked out, and a new directory is created with `os.Mkdir`, never reused, befor
 keeps the newest 20 succeeded runs. The descriptor records `stripDetachArgs(os.Args[1:])`, which drops
 `--detach`, `--detached-run`, `--t3-thread`, `--acp-thread`, and `--acp-session` in both value forms,
 and the set `cmuxEnvOptions` as `env_options`, on every launch, because Mode 2 relaunches from them.
-The child is the hidden `--detached-run <id>`, started by `startDetachedProcess` with `Setsid`, stdin
+The child is the hidden `--detached-run <id>`, started with `Setsid` through the hop, stdin
 on the null device, stdout and stderr appended to `console.log` after a per-attempt separator, and an
 environment `detachScrubbed` cleans of `T3_ACP_MCP_*`, `LOOPAI_T3_TOKEN`, and `CMUX_*`, behind
 `detachScopePrefix` (`systemd-run --user --scope --quiet --collect --` where a Linux user manager
-exists; a scoped child that ends before answering is retried once without the scope). Windows refuses
+exists; a scoped start that fails or ends before answering is retried once without the scope). The
+hop is loopai run with `--detached-hop` as its first argument, which `main` dispatches to
+`runDetachHop` before flag parsing and the version banner, since its stdout is the console log: it
+checks fds 3 and 4 with `checkHandshakeFD`, starts the rest of its argv with `Setsid` passing them on,
+and exits at once; `spawn` waits for it under `detachAckTimeout`, reads a non-zero exit as a start
+error, and only then writes the secret. The hop exists because T3 Code 0.1.10's `ClaudeAdapterV2.ts`,
+for a Claude CLI without a systemd scope (macOS, Linux without a user manager), walks
+`ps -A -o pid=,ppid=,pgid=,lstart=` parent-pid edges from the CLI and from every process it already
+tracks once a second, and SIGKILLs every tracked process, a group leader's whole group, when the CLI
+exits (idle release, app restart, access-mode switch); `Setsid` does not hide a process from that
+walk, a dead parent does. Once the hop exits the child belongs to launchd or init, so the walk can
+reach it only within the hop's one `exec`, about a millisecond per launch. The hop is loopai and not
+`sh -c '"$@" &'` because a non-interactive shell starts an asynchronous command with SIGINT and
+SIGQUIT ignored, and the ignored disposition would survive into codex and claude. Tests point
+`detachHopArgs` at `TestDetachHopHelper`, and `TestDetachLaunchChildLeavesLauncherTree` repeats T3's
+walk. Codex threads in T3 Code signal only their own process group on macOS, which `Setsid` already
+escaped. Windows refuses
 every detached command, and with it every run a loopai thread asks for, through
 `errDetachUnsupported`, while the code builds.
 

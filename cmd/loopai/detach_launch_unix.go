@@ -17,8 +17,9 @@ func runDetachCommand(ctx context.Context, o opts, cfg *config.Config, dio detac
 	return launchDetached(ctx, o, cfg, dio)
 }
 
-// startDetachedProcess starts cmd in a session of its own, so neither the terminal nor the agent that
-// ran the launcher can signal it or take it down with their process group.
+// startDetachedProcess starts the hop in a session of its own, so neither the terminal nor the agent
+// that ran the launcher can signal it or take it down with their process group during the moment it
+// lives; the hop gives the child a session of its own as well.
 func startDetachedProcess(cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

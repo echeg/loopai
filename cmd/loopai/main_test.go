@@ -113,6 +113,9 @@ func TestMain(m *testing.M) {
 	// a Linux machine with a systemd user manager would otherwise start every detached child the
 	// suite launches in a transient scope of the real user manager
 	detachScopePrefix = func() []string { return nil }
+	// the hop is the test binary like the child, so it needs its helper selector; without it the
+	// re-executed binary would run the whole suite
+	detachHopArgs = []string{"-test.run=^TestDetachHopHelper$", "--"}
 	// a detached child started with a T3 token would otherwise bridge its run to whatever T3 server
 	// its environment finds; the bridge tests start it themselves against the fake server
 	newT3Bridge = func(t3BridgeConfig) func() { return func() {} }

@@ -63,12 +63,13 @@ const detachRealChildEnv = "LOOPAI_TEST_DETACH_REAL_CHILD"
 var detachStubEnviron = os.Environ()
 
 // detachStubDump is what a stub child records: its arguments after the helper selector, its
-// environment, the launcher's secret line, its pid, and its working directory.
+// environment, the launcher's secret line, its pid and its parent's, and its working directory.
 type detachStubDump struct {
 	Args   []string `json:"args"`
 	Env    []string `json:"env"`
 	Secret string   `json:"secret"`
 	PID    int      `json:"pid"`
+	PPID   int      `json:"ppid"`
 	Cwd    string   `json:"cwd"`
 }
 
@@ -146,7 +147,7 @@ func runDetachStub(mode string) int {
 	defer func() { _ = release() }()
 	cwd, _ := os.Getwd()
 	dump, _ := json.Marshal(detachStubDump{Args: args, Env: detachStubEnviron, Secret: string(secret),
-		PID: os.Getpid(), Cwd: cwd})
+		PID: os.Getpid(), PPID: os.Getppid(), Cwd: cwd})
 	if err := os.WriteFile(filepath.Join(dir, detachStubDumpFile), dump, 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, "stub:", err)
 		return 4
@@ -389,6 +390,49 @@ func TestDetachLaunchStartsRun(t *testing.T) {
 		require.NoError(t, classifyErr)
 		assert.Equal(t, runs.StatusRunning, status)
 	})
+}
+
+func TestDetachLaunchChildLeavesLauncherTree(t *testing.T) {
+	f := newDetachLaunchFixture(t)
+	_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+	require.NoError(t, err, stderr)
+	dump := f.dump(t, f.onlyRun(t).ID)
+
+	assert.NotEqual(t, os.Getpid(), dump.PPID, "the launcher is not the child's parent")
+	assert.NotContains(t, psDescendants(t, os.Getpid()), dump.PID,
+		"a ps walk over parent pids from the launcher, as T3 Code does for a Claude thread, does not reach the child")
+}
+
+// psDescendants returns the pids reachable from root through parent-pid edges in one `ps` snapshot,
+// the walk T3 Code's ClaudeAdapterV2 runs over a Claude CLI's descendants.
+func psDescendants(t *testing.T, root int) []int {
+	t.Helper()
+	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=").Output()
+	require.NoError(t, err)
+	children := map[int][]int{}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		ppid, ppidErr := strconv.Atoi(fields[1])
+		if pidErr != nil || ppidErr != nil {
+			continue
+		}
+		children[ppid] = append(children[ppid], pid)
+	}
+	var found []int
+	pending := []int{root}
+	for len(pending) > 0 {
+		parent := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, child := range children[parent] {
+			found = append(found, child)
+			pending = append(pending, child)
+		}
+	}
+	return found
 }
 
 func TestDetachLaunchT3Thread(t *testing.T) {
@@ -1149,6 +1193,19 @@ func TestDetachLaunchChildFailures(t *testing.T) {
 			20*time.Millisecond, "the child is not killed and takes the run")
 	})
 
+	t.Run("a hop that does not finish is reported", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		detachScopePrefix = func() []string { return []string{"/bin/sh", "-c", "sleep 30", "scope"} }
+		t.Cleanup(func() { detachScopePrefix = func() []string { return nil } })
+		detachAckTimeout = 2 * time.Second
+		t.Cleanup(func() { detachAckTimeout = 120 * time.Second })
+
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		desc := f.onlyRun(t)
+		require.ErrorContains(t, err, "detached run "+desc.ID+": the start did not finish within 2s")
+		assert.NotContains(t, stderr, "warning:", "a slow start is not retried")
+	})
+
 	t.Run("a canceled launcher leaves the child running", func(t *testing.T) {
 		f := newDetachLaunchFixture(t)
 		t.Setenv(detachStubEnv, "hang")
@@ -1191,8 +1248,8 @@ func TestDetachLaunchScope(t *testing.T) {
 			wantWarning: "warning: the run did not start in a systemd user scope (start the detached child: "},
 		{name: "a scope that exits without an answer is retried without it", mode: "ok",
 			prefix: func(*testing.T) []string { return []string{"/bin/sh", "-c", "exit 1", "scope"} },
-			wantWarning: "warning: the run did not start in a systemd user scope (it exited before answering); " +
-				"starting it without one\n"},
+			wantWarning: "warning: the run did not start in a systemd user scope (start the detached child: " +
+				"exit status 1); starting it without one\n"},
 		{name: "a scope that execs the child keeps the handshake descriptors", mode: "ok",
 			prefix: func(*testing.T) []string { return []string{"/bin/sh", "-c", `exec "$@"`, "scope"} }},
 		{name: "an answered failure is not retried", mode: "error",

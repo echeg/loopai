@@ -6,9 +6,9 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"testing"
 
@@ -16,11 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// detachHopSelector is the argv prefix that makes a re-executed test binary the hop; TestMain sets
-// detachHopArgs to it so every launcher test starts its child through the hop.
-var detachHopSelector = []string{"-test.run=^TestDetachHopHelper$", "--"}
-
-// TestDetachHopHelper is the hop the launcher tests start, not a test of its own.
+// TestDetachHopHelper is the hop the launcher tests start, not a test of its own; TestMain points
+// detachHopArgs at it.
 func TestDetachHopHelper(t *testing.T) {
 	i := slices.Index(os.Args, detachHopArg)
 	if i < 0 {
@@ -42,21 +39,20 @@ type hopRun struct {
 // handshake pipes as fds 3 and 4 when handshake is true, and waits for it.
 func runHop(t *testing.T, argv []string, handshake bool) hopRun {
 	t.Helper()
-	args := append(slices.Clone(detachHopSelector), detachHopArg)
+	args := append(slices.Clone(detachHopArgs), detachHopArg)
 	cmd := exec.Command(os.Args[0], append(args, argv...)...)
 	// a file, not a buffer: the command the hop starts inherits stderr and may outlive the hop, and
 	// Run waits for a buffer's pipe to close, as the launcher would for anything but its console file
-	stderrPath := filepath.Join(t.TempDir(), "stderr")
-	stderr, err := os.Create(stderrPath)
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
 	require.NoError(t, err)
 	defer stderr.Close()
 	cmd.Stderr = stderr
 	var res hopRun
 	if handshake {
-		secretR, secretW, err := os.Pipe()
-		require.NoError(t, err)
-		ackR, ackW, err := os.Pipe()
-		require.NoError(t, err)
+		secretR, secretW, secretErr := os.Pipe()
+		require.NoError(t, secretErr)
+		ackR, ackW, ackErr := os.Pipe()
+		require.NoError(t, ackErr)
 		t.Cleanup(func() { _ = secretW.Close(); _ = ackR.Close() })
 		cmd.ExtraFiles = []*os.File{secretR, ackW}
 		defer func() { _ = secretR.Close(); _ = ackW.Close() }()
@@ -71,7 +67,9 @@ func runHop(t *testing.T, argv []string, handshake bool) hopRun {
 	default:
 		require.NoError(t, runErr)
 	}
-	data, err := os.ReadFile(stderrPath)
+	_, err = stderr.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+	data, err := io.ReadAll(stderr)
 	require.NoError(t, err)
 	res.stderr = string(data)
 	return res

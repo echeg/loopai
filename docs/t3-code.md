@@ -50,7 +50,11 @@ the reason and the end of the run's console log.
 
 The run lives in its own session (`setsid`), with stdin on the null device, stdout and stderr in its
 console log, and hangups ignored, so closing the terminal, ending the agent turn, or stopping the
-T3 Code provider that started it does not end it. On Linux with a systemd user manager the run starts
+T3 Code provider that started it does not end it. The launcher starts it through a short-lived
+intermediate loopai process that exits at once, so the run stops being a descendant of the agent
+that launched it within a millisecond. T3 Code tracks the descendants of a Claude thread's CLI
+through the process table and kills them when that CLI exits (when an idle thread is unloaded, on an app restart,
+or on an access-mode switch); a run that is no longer a descendant survives that. On Linux with a systemd user manager the run starts
 in a transient user scope (`systemd-run --user --scope`), so a service's cgroup that is stopped
 later, such as a T3 Code provider slice, does not take the run with it; when the scope cannot start,
 loopai warns and starts the run without it. The run's environment never contains `T3_ACP_MCP_*`,

@@ -284,21 +284,28 @@ func TestSystemdScopePrefix(t *testing.T) {
 
 func TestDetachChildArgv(t *testing.T) {
 	argv := []string{"--tasks-only", "docs/plans/x.md"}
-	t.Run("direct", func(t *testing.T) {
-		assert.Equal(t, []string{"/bin/loopai", "--detached-run=x-1", "--tasks-only", "docs/plans/x.md"},
-			detachChildArgv(nil, "/bin/loopai", "x-1", argv))
+	// TestMain points detachHopArgs at the hop helper; these cases check the production shape
+	hopArgs := detachHopArgs
+	detachHopArgs = nil
+	t.Cleanup(func() { detachHopArgs = hopArgs })
+
+	t.Run("through the hop", func(t *testing.T) {
+		assert.Equal(t, []string{"/bin/loopai", "--detached-hop", "/bin/loopai", "--detached-run=x-1", "--tasks-only",
+			"docs/plans/x.md"}, detachChildArgv(nil, "/bin/loopai", "x-1", argv))
 	})
-	t.Run("through the systemd scope", func(t *testing.T) {
+	t.Run("the systemd scope wraps the hop", func(t *testing.T) {
 		prefix := []string{"/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect", "--"}
 		assert.Equal(t, []string{"/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect", "--",
-			"/bin/loopai", "--detached-run=x-1", "--tasks-only", "docs/plans/x.md"},
+			"/bin/loopai", "--detached-hop", "/bin/loopai", "--detached-run=x-1", "--tasks-only", "docs/plans/x.md"},
 			detachChildArgv(prefix, "/bin/loopai", "x-1", argv))
 		assert.Len(t, prefix, 6, "the prefix is not modified")
 	})
-	t.Run("with a helper selector", func(t *testing.T) {
+	t.Run("with helper selectors", func(t *testing.T) {
+		detachHopArgs = []string{"-test.run=^H$", "--"}
 		detachChildArgs = []string{"-test.run=^X$", "--"}
-		t.Cleanup(func() { detachChildArgs = nil })
-		assert.Equal(t, []string{"/bin/loopai", "-test.run=^X$", "--", "--detached-run=x-1", "--tasks-only", "docs/plans/x.md"},
+		t.Cleanup(func() { detachHopArgs, detachChildArgs = nil, nil })
+		assert.Equal(t, []string{"/bin/loopai", "-test.run=^H$", "--", "--detached-hop", "/bin/loopai", "-test.run=^X$",
+			"--", "--detached-run=x-1", "--tasks-only", "docs/plans/x.md"},
 			detachChildArgv(nil, "/bin/loopai", "x-1", argv))
 	})
 }

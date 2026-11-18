@@ -45,6 +45,9 @@ var (
 	// detachChildArgs are inserted between the executable and the child's own arguments: nothing in
 	// production, a helper test selector when tests point detachExecutable at the test binary.
 	detachChildArgs []string
+	// detachHopArgs are inserted between the executable and detachHopArg: nothing in production, the
+	// hop helper's test selector in tests.
+	detachHopArgs []string
 	// detachScopePrefix returns the command the child is started through, or nil to start it directly.
 	detachScopePrefix = defaultDetachScopePrefix
 	// detachAckTimeout bounds the wait for the child's answer.
@@ -287,11 +290,15 @@ func detachEnvOptions(env []string) map[string]string {
 	return options
 }
 
-// detachChildArgv is the child's command line: the scope prefix, the executable, detachChildArgs,
-// --detached-run=<id>, and the run's recorded arguments.
+// detachChildArgv is the command line the launcher starts: the scope prefix, then the hop (the
+// executable, detachHopArgs, detachHopArg), then the child it starts (the executable, detachChildArgs,
+// --detached-run=<id>, and the run's recorded arguments). The scope wraps the hop, and the child the
+// hop forks stays in the scope's cgroup.
 func detachChildArgv(prefix []string, exe, id string, argv []string) []string {
 	cmd := slices.Clone(prefix)
 	cmd = append(cmd, exe)
+	cmd = append(cmd, detachHopArgs...)
+	cmd = append(cmd, detachHopArg, exe)
 	cmd = append(cmd, detachChildArgs...)
 	cmd = append(cmd, "--detached-run="+id)
 	return append(cmd, argv...)
@@ -645,11 +652,15 @@ func (s detachStart) noHandshakeReason() string {
 }
 
 // spawn starts the child once, through prefix when it is not empty, and waits for its answer. The
-// child gets two distinct pipes: the read end of the secret pipe as fd 3 and the write end of the ack
-// pipe as fd 4, the inherited FIFOs it requires. The launcher closes its copies of those ends at once,
-// so EOF on the ack pipe comes from the child alone, sends the secret line, which carries the T3 token
-// of a --t3-thread run and is the only way the token reaches the child, and never waits for the
-// child, which outlives it; the child's exit shows as that EOF instead.
+// launcher starts the hop (see detachHopArg), which starts the child and exits, so the child is never
+// the launcher's descendant once the hop is gone. The hop and then the child get two distinct pipes:
+// the read end of the secret pipe as fd 3 and the write end of the ack pipe as fd 4, the inherited
+// FIFOs the child requires. The launcher closes its copies of those ends at once, so EOF on the ack
+// pipe comes from the child alone, waits for the hop, and only once the hop started the child sends
+// the secret line, which carries the T3 token of a --t3-thread run and is the only way the token
+// reaches the child. It never waits for the child, which outlives it; the child's exit shows as that
+// EOF instead. The wait for the hop relies on console being a file: with any other writer, exec would
+// copy through a pipe the child inherits, and the wait would last as long as the run.
 func (l *detachLaunch) spawn(ctx context.Context, prefix []string, console *os.File) detachStart {
 	secretR, secretW, err := os.Pipe()
 	if err != nil {
@@ -664,7 +675,7 @@ func (l *detachLaunch) spawn(ctx context.Context, prefix []string, console *os.F
 	defer ackR.Close()
 
 	argv := detachChildArgv(prefix, l.exe, l.desc.ID, l.desc.Argv)
-	// the child outlives the launcher, so no context may kill it
+	// the child outlives the launcher, so no context may kill it, nor the hop that starts it
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:noctx // a context would kill the detached run
 	cmd.Dir, cmd.Env = l.root, l.env
 	cmd.Stdout, cmd.Stderr = console, console
@@ -672,14 +683,48 @@ func (l *detachLaunch) spawn(ctx context.Context, prefix []string, console *os.F
 	startErr := startDetachedProcess(cmd)
 	_ = secretR.Close()
 	_ = ackW.Close()
-	if startErr != nil {
+	if startErr == nil {
+		startErr = awaitDetachHop(ctx, cmd, detachAckTimeout)
+	}
+	var waitErr *detachHopWaitError
+	switch {
+	case errors.As(startErr, &waitErr):
+		_ = secretW.Close()
+		return detachStart{waitErr: waitErr.err}
+	case startErr != nil:
 		_ = secretW.Close()
 		return detachStart{startErr: startErr}
 	}
-	defer func() { _ = cmd.Process.Release() }()
 
 	sendDetachSecret(secretW, detachSecret{T3Token: l.token})
 	return awaitDetachAck(ctx, ackR, detachAckTimeout)
+}
+
+// detachHopWaitError is a wait for the hop that ended before the hop did: the timeout passed or the
+// launcher's context ended. The hop is left running, as the child would be.
+type detachHopWaitError struct{ err error }
+
+func (e *detachHopWaitError) Error() string { return e.err.Error() }
+
+// awaitDetachHop waits for the started hop cmd, at most timeout and no longer than ctx lives: nil once
+// the hop started the child and exited, the start error when it exited non-zero, a
+// *detachHopWaitError when the wait ended first.
+func awaitDetachHop(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("start the detached child: %w", err)
+		}
+		return nil
+	case <-timer.C:
+		return &detachHopWaitError{err: fmt.Errorf("the start did not finish within %s", timeout)}
+	case <-ctx.Done():
+		return &detachHopWaitError{err: fmt.Errorf("stopped waiting for the start: %w", ctx.Err())}
+	}
 }
 
 // sendDetachSecret writes secret as the child's one handshake line and closes the pipe. A child that
