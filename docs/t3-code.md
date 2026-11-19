@@ -8,7 +8,7 @@ loopai worktree and durable state, usable from any shell. T3 Code is only a wind
 two modes:
 
 - [Mode 1, a terminal in this thread](#mode-1-a-terminal-in-this-thread): the thread you are talking
-  in gets a terminal tab that follows the run and a `[loopai: task 3/7]` title prefix. The thread's
+  in gets a terminal tab that follows the run and a `[task 3/7]` title prefix. The thread's
   agent stays free for conversation.
 - [Mode 2, a loopai thread](#mode-2-a-loopai-thread-that-shows-working): a new thread on the loopai
   provider shows Working for the whole run, with the plan's tasks and the current phase, and ends
@@ -172,11 +172,12 @@ What the thread shows:
 - A terminal tab, `loopai-<run-id>`, opened with the same working directory and environment T3 Code's
   own terminal for the thread uses, running ` cd '<checkout>' && '<loopai>' --attach <run-id>`. The
   leading space keeps the command out of the shell history. When the run ends the shell stays open.
-- A title prefix, written on transitions only: `[loopai: task 3/7]`, `[loopai: review]`,
-  `[loopai: external review]`, `[loopai: finalize]`, `[loopai: report]`, `[loopai: limit wait]`, and
-  finally `[loopai: done]`, `[loopai: failed]`, or `[loopai: stopped]`. The rest of the title is kept,
-  including a name you gave the thread after the run started. Only a recognized `[loopai: …]` prefix
-  is ever replaced. Before its first write loopai waits up to about 2 minutes for a title T3 Code is
+- A status title prefix, written on transitions only: `[task 3/7]`, `[review]`,
+  `[external review 2]` (the reviewer's iteration, kept while its findings are evaluated, and
+  `[external review]` before the first one), `[finalize]`, `[report]`, `[limit wait]`, and finally
+  `[done]`, `[failed]`, or `[stopped]`. The rest of the title is kept, including a name you gave the
+  thread after the run started. Only one of those exact prefixes, or the `[loopai: …]` form earlier
+  versions wrote, is ever replaced, so a bracket of your own such as `[WIP]` stays. Before its first write loopai waits up to about 2 minutes for a title T3 Code is
   still generating, since any title write cancels that generation. The wait does not apply once the
   run has finished: a run that ends within those 2 minutes writes its final title at once, cancelling
   T3 Code's generation, so the thread still gets its final state and unread mark before loopai exits.

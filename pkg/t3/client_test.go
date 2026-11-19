@@ -376,13 +376,13 @@ func TestDispatchPayloads(t *testing.T) {
 		TitleRegenerating: true}))
 	c := newTestClient(t, s)
 
-	require.NoError(t, c.SetTitle(t.Context(), threadID, "[loopai: task 1/2] My thread"))
+	require.NoError(t, c.SetTitle(t.Context(), threadID, "[task 1/2] My thread"))
 	require.NoError(t, c.Pin(t.Context(), threadID))
 	th, _ := s.Thread(threadID)
-	assert.Equal(t, "[loopai: task 1/2] My thread", th.Title)
+	assert.Equal(t, "[task 1/2] My thread", th.Title)
 	assert.NotEmpty(t, th.PinnedAt)
 	require.NoError(t, c.Unpin(t.Context(), threadID))
-	require.NoError(t, c.SetTitle(t.Context(), threadID, "[loopai: task 1/2] My thread"))
+	require.NoError(t, c.SetTitle(t.Context(), threadID, "[task 1/2] My thread"))
 	th, _ = s.Thread(threadID)
 	assert.Empty(t, th.PinnedAt)
 
@@ -444,18 +444,18 @@ func TestDispatchRetryReusesCommandID(t *testing.T) {
 	c := newTestClient(t, s)
 
 	s.DieNext(methodDispatchCommand, "lost")
-	err := c.SetTitle(t.Context(), "th", "[loopai: review] T")
+	err := c.SetTitle(t.Context(), "th", "[review] T")
 	var terr *TransportError
 	require.ErrorAs(t, err, &terr, "a Die leaves the outcome unknown")
 
 	_, err = c.Connect(t.Context()) // the retry state survives a reconnect
 	require.NoError(t, err)
-	require.NoError(t, c.SetTitle(t.Context(), "th", "[loopai: review] T"))
-	require.NoError(t, c.SetTitle(t.Context(), "th", "[loopai: review] T"))
+	require.NoError(t, c.SetTitle(t.Context(), "th", "[review] T"))
+	require.NoError(t, c.SetTitle(t.Context(), "th", "[review] T"))
 
 	s.DieNext(methodDispatchCommand, "lost")
 	require.Error(t, c.Pin(t.Context(), "th"))
-	require.NoError(t, c.SetTitle(t.Context(), "th", "[loopai: done] T"))
+	require.NoError(t, c.SetTitle(t.Context(), "th", "[done] T"))
 	require.NoError(t, c.Pin(t.Context(), "th"))
 
 	ids := make([]string, 0, 6)

@@ -1,13 +1,13 @@
 ---
 name: loopai-t3
-description: "Run an existing loopai plan from a T3 Code thread: as a detached run this thread follows in a terminal tab with a [loopai: ...] title prefix, or in a new loopai thread that shows Working for the whole run. Supports per-phase model and reviewer overrides. Use for loopai-t3, run plan in t3, or launch loopai in t3 code."
+description: "Run an existing loopai plan from a T3 Code thread: as a detached run this thread follows in a terminal tab with a status title prefix such as [task 3/7], or in a new loopai thread that shows Working for the whole run. Supports per-phase model and reviewer overrides. Use for loopai-t3, run plan in t3, or launch loopai in t3 code."
 metadata:
   short-description: Run loopai in this T3 thread's terminal or a new loopai thread
 ---
 
 # loopai-t3 - Run a Plan from a T3 Code Thread
 
-**SCOPE**: start one loopai plan run that T3 Code shows, in one of two modes, and report how to follow it. Mode 1 runs `loopai --detach --t3-thread` from this thread: the run gets its own process and loopai worktree, and this thread follows it in a terminal tab and a `[loopai: ...]` title prefix while this conversation stays free. Mode 2 calls `t3_thread_launch` to open a new thread on the loopai provider, which starts the same detached run and shows Working until it ends. loopai does the implementation work. Do not independently edit code, commit, or merge.
+**SCOPE**: start one loopai plan run that T3 Code shows, in one of two modes, and report how to follow it. Mode 1 runs `loopai --detach --t3-thread` from this thread: the run gets its own process and loopai worktree, and this thread follows it in a terminal tab and a status title prefix such as `[task 3/7]` while this conversation stays free. Mode 2 calls `t3_thread_launch` to open a new thread on the loopai provider, which starts the same detached run and shows Working until it ends. loopai does the implementation work. Do not independently edit code, commit, or merge.
 
 ## Skill Contract Check
 
@@ -248,7 +248,7 @@ Mode 1:
 ```text
 loopai run started: <run-id>
 follow: loopai --attach <run-id>
-Progress shows in this thread's terminal tab and as the [loopai: …] title prefix.
+Progress shows in this thread's terminal tab and as the status title prefix, such as [task 3/7] or [external review 2].
 If the run fails or is stopped, ask me to run the same plan again in this mode: it resumes the run with a fresh token.
 ```
 

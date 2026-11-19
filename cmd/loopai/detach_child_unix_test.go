@@ -685,7 +685,7 @@ func TestDetachedChildBridgesToT3Thread(t *testing.T) {
 	f.awaitSession(t)
 
 	t.Run("while the run works, the thread shows it", func(t *testing.T) {
-		require.Eventually(t, func() bool { return threadTitle(s) == "[loopai: task 1/1] My thread" }, detachChildWait,
+		require.Eventually(t, func() bool { return threadTitle(s) == "[task 1/1] My thread" }, detachChildWait,
 			10*time.Millisecond, "console log:\n%s", f.consoleLog(t))
 		require.Eventually(t, func() bool { return len(s.Writes()) == 1 }, detachChildWait, 10*time.Millisecond)
 		th, _ := s.Thread(detachChildThread)
@@ -711,11 +711,11 @@ func TestDetachedChildBridgesToT3Thread(t *testing.T) {
 		require.GreaterOrEqual(t, len(dispatches), 3)
 		final, unpin, unread := dispatches[len(dispatches)-3], dispatches[len(dispatches)-2], dispatches[len(dispatches)-1]
 		assert.Equal(t, "thread.metadata.update", final["type"])
-		assert.Equal(t, "[loopai: done] My thread", final["title"])
+		assert.Equal(t, "[done] My thread", final["title"])
 		assert.Equal(t, "thread.unpin", unpin["type"])
 		assert.Equal(t, "thread.mark-unread", unread["type"])
 		th, _ := s.Thread(detachChildThread)
-		assert.Equal(t, "[loopai: done] My thread", th.Title)
+		assert.Equal(t, "[done] My thread", th.Title)
 		assert.Empty(t, th.PinnedAt)
 		assert.Equal(t, "2026-10-23T10:59:59.999Z", th.LastVisitedAt, "the thread is marked unread")
 	})
@@ -734,7 +734,7 @@ func TestDetachedChildBridgeRejectedTokenKeepsTheRun(t *testing.T) {
 	p.sendToken(t, detachChildToken)
 	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
 	f.awaitSession(t)
-	require.Eventually(t, func() bool { return threadTitle(s) == "[loopai: task 1/1] My thread" }, detachChildWait,
+	require.Eventually(t, func() bool { return threadTitle(s) == "[task 1/1] My thread" }, detachChildWait,
 		10*time.Millisecond, "console log:\n%s", f.consoleLog(t))
 
 	// the token expires, then T3 restarts: the reconnect is rejected
@@ -751,7 +751,7 @@ func TestDetachedChildBridgeRejectedTokenKeepsTheRun(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(progressLog, detachBridgeStopped), "exactly one progress-log line:\n%s", progressLog)
 	assert.Contains(t, progressLog, "401 auth_invalid (invalid_credential)")
 	assert.Equal(t, 1, strings.Count(f.consoleLog(t), detachBridgeStopped), "and its copy on the console log")
-	assert.Equal(t, "[loopai: task 1/1] My thread", threadTitle(s), "a disabled bridge writes nothing more")
+	assert.Equal(t, "[task 1/1] My thread", threadTitle(s), "a disabled bridge writes nothing more")
 	assert.NotContains(t, progressLog+f.consoleLog(t), detachChildToken)
 }
 

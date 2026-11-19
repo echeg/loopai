@@ -1,13 +1,13 @@
 ---
 name: loopai-t3
-description: "Use when the user wants to run an existing loopai plan from a T3 Code thread (T3 Code desktop, web, or mobile app, t3.codes): as a detached run this thread follows in a terminal tab with a [loopai: ...] title prefix, or in a new loopai thread that shows Working for the whole run, optionally with explicit per-phase model or external-reviewer overrides. Triggers: loopai-t3, run plan in t3, launch loopai in t3 code, запусти план в t3."
+description: "Use when the user wants to run an existing loopai plan from a T3 Code thread (T3 Code desktop, web, or mobile app, t3.codes): as a detached run this thread follows in a terminal tab with a status title prefix such as [task 3/7], or in a new loopai thread that shows Working for the whole run, optionally with explicit per-phase model or external-reviewer overrides. Triggers: loopai-t3, run plan in t3, launch loopai in t3 code, запусти план в t3."
 argument-hint: '[plan file] [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST] [--mode terminal|thread]'
 allowed-tools: [Bash, Read, Glob, AskUserQuestion, ToolSearch, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__t3_thread_list, mcp__t3-code__t3_thread_launch]
 ---
 
 # loopai-t3 - Run a Plan from a T3 Code Thread
 
-**SCOPE**: This command ONLY starts one loopai plan run that T3 Code shows, in one of two modes, and reports how to follow it. Mode 1 runs `loopai --detach --t3-thread` from this thread: the run gets its own process and loopai worktree, and this thread follows it in a terminal tab and a `[loopai: ...]` title prefix while its agent stays free for conversation. Mode 2 calls `t3_thread_launch` to open a new thread on the loopai provider, which starts the same detached run and shows Working until it ends. Do NOT edit code, commit, merge, or take any other action; loopai does the work.
+**SCOPE**: This command ONLY starts one loopai plan run that T3 Code shows, in one of two modes, and reports how to follow it. Mode 1 runs `loopai --detach --t3-thread` from this thread: the run gets its own process and loopai worktree, and this thread follows it in a terminal tab and a status title prefix such as `[task 3/7]` while its agent stays free for conversation. Mode 2 calls `t3_thread_launch` to open a new thread on the loopai provider, which starts the same detached run and shows Working until it ends. Do NOT edit code, commit, merge, or take any other action; loopai does the work.
 
 ## Skill Contract Check
 
@@ -248,7 +248,7 @@ Mode 1:
 ```text
 loopai run started: <run-id>
 follow: loopai --attach <run-id>
-Progress shows in this thread's terminal tab and as the [loopai: …] title prefix.
+Progress shows in this thread's terminal tab and as the status title prefix, such as [task 3/7] or [external review 2].
 If the run fails or is stopped, ask me to run the same plan again in this mode: it resumes the run with a fresh token.
 ```
 

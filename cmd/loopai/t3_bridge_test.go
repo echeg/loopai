@@ -304,14 +304,14 @@ func TestT3BridgeTitles(t *testing.T) {
 	h.start()
 
 	h.task(1)
-	h.waitTitle("[loopai: task 1/2] My thread")
+	h.waitTitle("[task 1/2] My thread")
 	h.task(2)
-	h.waitTitle("[loopai: task 2/2] My thread")
+	h.waitTitle("[task 2/2] My thread")
 	h.finish(runs.StatusSucceeded)
 	h.waitDone()
 
-	assert.Equal(t, "[loopai: done] My thread", h.thread().Title, "the final state is left in place")
-	assert.Equal(t, []string{"[loopai: task 1/2] My thread", "[loopai: task 2/2] My thread", "[loopai: done] My thread"},
+	assert.Equal(t, "[done] My thread", h.thread().Title, "the final state is left in place")
+	assert.Equal(t, []string{"[task 1/2] My thread", "[task 2/2] My thread", "[done] My thread"},
 		h.titles())
 	for _, d := range h.server.Dispatches() {
 		want := []string{"commandId", "threadId", "type"}
@@ -327,16 +327,16 @@ func TestT3BridgeKeepsARename(t *testing.T) {
 	h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 	h.start()
 	h.task(1)
-	h.waitTitle("[loopai: task 1/2] My thread")
+	h.waitTitle("[task 1/2] My thread")
 
 	h.rename("Renamed")
 	h.task(2)
-	h.waitTitle("[loopai: task 2/2] Renamed")
+	h.waitTitle("[task 2/2] Renamed")
 
-	h.rename("[loopai: task 2/2] Renamed again")
+	h.rename("[task 2/2] Renamed again")
 	h.finish(runs.StatusFailed)
 	h.waitDone()
-	assert.Equal(t, "[loopai: failed] Renamed again", h.thread().Title, "the prefix is replaced, not stacked")
+	assert.Equal(t, "[failed] Renamed again", h.thread().Title, "the prefix is replaced, not stacked")
 }
 
 func TestT3BridgeFinalStates(t *testing.T) {
@@ -348,14 +348,14 @@ func TestT3BridgeFinalStates(t *testing.T) {
 			h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 			h.start()
 			h.task(1)
-			h.waitTitle("[loopai: task 1/2] My thread")
+			h.waitTitle("[task 1/2] My thread")
 			h.settle()
 			assert.NotContains(t, h.commands(), "thread.mark-unread", "nothing is marked before the finish")
 			assert.Empty(t, h.thread().LastVisitedAt)
 
 			h.finish(tc.status)
 			h.waitDone()
-			assert.Equal(t, "[loopai: "+tc.want+"] My thread", h.thread().Title)
+			assert.Equal(t, "["+tc.want+"] My thread", h.thread().Title)
 			assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
 				"thread.mark-unread"}, h.commands(), "the mark-unread follows the final title and the unpin")
 			h.assertMarkedUnread()
@@ -369,24 +369,40 @@ func TestT3BridgeSendsOnlyChangedTitles(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		h.append(runs.Event{Type: runs.EventTask, N: 1, M: 2, Title: "One"}) // a retried iteration of the same task
 		h.waitApplied(h.append(runs.Event{Type: runs.EventTasks,
 			Statuses: []runs.TaskStatus{{N: 1, Status: runs.ProgressActive}}}))
-		assert.Equal(t, []string{"[loopai: task 1/2] My thread"}, h.titles())
+		assert.Equal(t, []string{"[task 1/2] My thread"}, h.titles())
 		h.append(runs.Event{Type: runs.EventPhase, Phase: status.PhaseReview})
-		h.waitTitle("[loopai: review] My thread")
-		assert.Equal(t, []string{"[loopai: task 1/2] My thread", "[loopai: review] My thread"}, h.titles())
+		h.waitTitle("[review] My thread")
+		assert.Equal(t, []string{"[task 1/2] My thread", "[review] My thread"}, h.titles())
 	})
 
 	t.Run("a title already showing the state is not written", func(t *testing.T) {
-		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "[loopai: task 1/2] My thread"}, false)
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "[task 1/2] My thread"}, false)
 		h.start()
 		h.waitApplied(h.task(1))
 		assert.Empty(t, h.titles())
 		h.task(2)
-		h.waitTitle("[loopai: task 2/2] My thread")
-		assert.Equal(t, []string{"[loopai: task 2/2] My thread"}, h.titles())
+		h.waitTitle("[task 2/2] My thread")
+		assert.Equal(t, []string{"[task 2/2] My thread"}, h.titles())
+	})
+
+	t.Run("external review iterations are numbered", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "[loopai: task 2/2] My thread"}, false)
+		h.start()
+		h.append(runs.Event{Type: runs.EventPhase, Phase: status.PhaseExternalReview})
+		h.waitTitle("[external review] My thread")
+		h.append(runs.Event{Type: runs.EventReview, Kind: runs.ReviewExternal, Iteration: 1})
+		h.waitTitle("[external review 1] My thread")
+		h.append(runs.Event{Type: runs.EventPhase, Phase: status.PhaseExternalEval})
+		h.waitApplied(h.append(runs.Event{Type: runs.EventReview, Kind: runs.ReviewEvaluation}))
+		h.append(runs.Event{Type: runs.EventPhase, Phase: status.PhaseExternalReview})
+		h.append(runs.Event{Type: runs.EventReview, Kind: runs.ReviewExternal, Iteration: 2})
+		h.waitTitle("[external review 2] My thread")
+		assert.Equal(t, []string{"[external review] My thread", "[external review 1] My thread",
+			"[external review 2] My thread"}, h.titles(), "the evaluation keeps its iteration's title")
 	})
 }
 
@@ -394,18 +410,18 @@ func TestT3BridgeIgnoresUsage(t *testing.T) {
 	h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 	h.start()
 	h.task(1)
-	h.waitTitle("[loopai: task 1/2] My thread")
+	h.waitTitle("[task 1/2] My thread")
 	before := h.commands()
 
 	h.waitApplied(h.append(runs.Event{Type: runs.EventUsage, Provider: "claude", Model: "opus",
 		Phase: status.PhaseReview, InputTokens: 10, OutputTokens: 20, CostUSD: new(0.5)}))
 	assert.Equal(t, before, h.commands(), "a usage event sends no command")
-	assert.Equal(t, []string{"[loopai: task 1/2] My thread"}, h.titles())
-	assert.Equal(t, "[loopai: task 1/2] My thread", h.thread().Title, "a usage event's phase is not a phase change")
+	assert.Equal(t, []string{"[task 1/2] My thread"}, h.titles())
+	assert.Equal(t, "[task 1/2] My thread", h.thread().Title, "a usage event's phase is not a phase change")
 
 	h.task(2)
-	h.waitTitle("[loopai: task 2/2] My thread")
-	assert.Equal(t, []string{"[loopai: task 1/2] My thread", "[loopai: task 2/2] My thread"}, h.titles())
+	h.waitTitle("[task 2/2] My thread")
+	assert.Equal(t, []string{"[task 1/2] My thread", "[task 2/2] My thread"}, h.titles())
 	assert.Empty(t, h.log.all())
 }
 
@@ -415,7 +431,7 @@ func TestT3BridgePin(t *testing.T) {
 		h.start()
 		require.Eventually(t, func() bool { return h.thread().PinnedAt != "" }, bridgeWait, time.Millisecond)
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
 		assert.Empty(t, h.thread().PinnedAt)
@@ -428,7 +444,7 @@ func TestT3BridgePin(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread", PinnedAt: pinned}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
 		assert.Equal(t, pinned, h.thread().PinnedAt)
@@ -440,10 +456,10 @@ func TestT3BridgePin(t *testing.T) {
 			ArchivedAt: "2026-10-01T00:00:00.000Z"}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
-		assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
+		assert.Equal(t, "[done] My thread", h.thread().Title)
 		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.mark-unread"},
 			h.commands(), "no unpin for a pin that failed")
 		assert.Empty(t, h.log.all())
@@ -458,10 +474,10 @@ func TestT3BridgeMarkUnreadFailures(t *testing.T) {
 		h.server.SetThread(th)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
-		assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
+		assert.Equal(t, "[done] My thread", h.thread().Title)
 		assert.Empty(t, h.thread().PinnedAt)
 		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
 			"thread.mark-unread"}, h.commands(), "the refused mark-unread is not retried")
@@ -474,9 +490,9 @@ func TestT3BridgeMarkUnreadFailures(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread", PinnedAt: pinned}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		// the final title is already in place, so the next dispatch is the mark-unread
-		h.rename("[loopai: done] My thread")
+		h.rename("[done] My thread")
 		handshakes := len(h.server.Handshakes())
 		h.server.DieNext("orchestration.dispatchCommand", "lost")
 		h.finish(runs.StatusSucceeded)
@@ -493,9 +509,9 @@ func TestT3BridgeMarkUnreadFailures(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		// the final title is already in place, so the next dispatch is the unpin
-		h.rename("[loopai: done] My thread")
+		h.rename("[done] My thread")
 		h.server.DieNext("orchestration.dispatchCommand", "lost")
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
@@ -624,7 +640,7 @@ func TestT3BridgeReopensTerminalAfterRestartOfAnUnknownServer(t *testing.T) {
 		assert.Len(t, h.server.Opens(), 2, "a terminal the snapshot holds is not opened again")
 		assert.Len(t, h.server.Writes(), 2)
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		assert.Empty(t, h.log.all())
 	})
 }
@@ -638,10 +654,10 @@ func TestT3BridgeSurvivesAWriteIntoADeadShell(t *testing.T) {
 		h.settle()
 
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
-		assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
+		assert.Equal(t, "[done] My thread", h.thread().Title)
 		assert.Empty(t, h.thread().PinnedAt, "the pin the bridge took is released")
 		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
 			"thread.mark-unread"}, h.commands())
@@ -680,10 +696,10 @@ func TestT3BridgeSurvivesAWriteIntoADeadShell(t *testing.T) {
 		h.waitWrites(3)
 
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		h.finish(runs.StatusFailed)
 		h.waitDone()
-		assert.Equal(t, "[loopai: failed] My thread", h.thread().Title)
+		assert.Equal(t, "[failed] My thread", h.thread().Title)
 		assert.Empty(t, h.thread().PinnedAt, "the pin the bridge took is released")
 		assert.Empty(t, h.log.all(), "a terminal gone does not disable the bridge")
 	})
@@ -710,7 +726,7 @@ func TestT3BridgeNeverRetypesAClosedTerminal(t *testing.T) {
 	assert.Len(t, h.server.Writes(), 1, "nor typed into")
 
 	h.task(1)
-	h.waitTitle("[loopai: task 1/2] My thread")
+	h.waitTitle("[task 1/2] My thread")
 }
 
 func TestT3BridgeWaitsForTitleRegeneration(t *testing.T) {
@@ -723,7 +739,7 @@ func TestT3BridgeWaitsForTitleRegeneration(t *testing.T) {
 		th := h.thread()
 		th.Title, th.TitleRegenerating = "Generated", false
 		h.server.SetThread(th)
-		h.waitTitle("[loopai: task 1/2] Generated")
+		h.waitTitle("[task 1/2] Generated")
 	})
 
 	t.Run("for at most two minutes", func(t *testing.T) {
@@ -734,14 +750,14 @@ func TestT3BridgeWaitsForTitleRegeneration(t *testing.T) {
 		h.settle()
 		assert.Empty(t, h.titles())
 		h.clock.Advance(time.Second)
-		h.waitTitle("[loopai: task 1/2] New thread")
+		h.waitTitle("[task 1/2] New thread")
 		assert.False(t, h.thread().TitleRegenerating, "the write cancels the generation")
 
 		th := h.thread()
 		th.TitleRegenerating = true // a later generation is simply overwritten
 		h.server.SetThread(th)
 		h.task(2)
-		h.waitTitle("[loopai: task 2/2] New thread")
+		h.waitTitle("[task 2/2] New thread")
 	})
 }
 
@@ -752,7 +768,7 @@ func TestT3BridgeFinalTitleSkipsRegenerationWait(t *testing.T) {
 		h.waitWrites(1) // connected and pinned, with no state to show yet
 		h.finish(runs.StatusFailed)
 		h.waitDone()
-		assert.Equal(t, "[loopai: failed] New thread", h.thread().Title, "the final title does not wait")
+		assert.Equal(t, "[failed] New thread", h.thread().Title, "the final title does not wait")
 		assert.False(t, h.thread().TitleRegenerating, "the write cancels the generation")
 		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.unpin", "thread.mark-unread"},
 			h.commands())
@@ -767,7 +783,7 @@ func TestT3BridgeFinalTitleSkipsRegenerationWait(t *testing.T) {
 
 		h.finish(runs.StatusFailed)
 		h.waitDone()
-		assert.Equal(t, []string{"[loopai: failed] New thread"}, h.titles(),
+		assert.Equal(t, []string{"[failed] New thread"}, h.titles(),
 			"the waiting progress title is never written")
 		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.unpin", "thread.mark-unread"},
 			h.commands())
@@ -787,7 +803,7 @@ func TestT3BridgeFinalTitleSkipsRegenerationWait(t *testing.T) {
 		assert.Greater(t, len(h.server.Handshakes()), handshakes, "the bridge reconnected")
 		dispatches := h.server.Dispatches()
 		assert.Equal(t, dispatches[1]["commandId"], dispatches[2]["commandId"], "the retry reuses the command id")
-		assert.Equal(t, "[loopai: failed] New thread", h.thread().Title, "the retry does not wait either")
+		assert.Equal(t, "[failed] New thread", h.thread().Title, "the retry does not wait either")
 		h.assertMarkedUnread()
 		assert.Empty(t, h.log.all(), "an unknown outcome does not disable the bridge")
 	})
@@ -798,10 +814,10 @@ func TestT3BridgeThreadIDReachesEveryRequestUnchanged(t *testing.T) {
 	h.start()
 	h.waitWrites(1)
 	h.task(1)
-	h.waitTitle("[loopai: task 1/2] Subagent")
+	h.waitTitle("[task 1/2] Subagent")
 	h.finish(runs.StatusSucceeded)
 	h.waitDone()
-	assert.Equal(t, "[loopai: done] Subagent", h.thread().Title)
+	assert.Equal(t, "[done] Subagent", h.thread().Title)
 
 	methods := map[string]bool{}
 	for _, req := range h.server.Requests() {
@@ -827,7 +843,7 @@ func TestT3BridgeRetriesUntilT3Runs(t *testing.T) {
 	assert.Empty(t, h.server.Handshakes())
 
 	require.NoError(t, h.server.WriteRuntime(h.home))
-	h.waitTitle("[loopai: task 1/2] My thread")
+	h.waitTitle("[task 1/2] My thread")
 	assert.Empty(t, h.log.all(), "a server that is not running yet does not disable the bridge")
 }
 
@@ -836,7 +852,7 @@ func TestT3BridgeDisables(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 
 		h.server.RejectNextConnection()
 		require.NoError(t, h.server.Restart())
@@ -851,7 +867,7 @@ func TestT3BridgeDisables(t *testing.T) {
 		h.task(2)
 		time.Sleep(100 * time.Millisecond)
 		assert.Len(t, h.server.Handshakes(), handshakes, "a disabled bridge never reconnects")
-		assert.Equal(t, "[loopai: task 1/2] My thread", h.thread().Title)
+		assert.Equal(t, "[task 1/2] My thread", h.thread().Title)
 	})
 
 	t.Run("a server that does not speak protocol 2", func(t *testing.T) {
@@ -897,12 +913,12 @@ func TestT3BridgeTerminalErrorStopsOnlyTheTerminal(t *testing.T) {
 			assert.Contains(t, lines[0], tc.tag)
 
 			h.task(1)
-			h.waitTitle("[loopai: task 1/2] My thread")
+			h.waitTitle("[task 1/2] My thread")
 			h.clock.Advance(10 * time.Minute) // past every re-type wait
 			h.settle()
 			h.finish(runs.StatusSucceeded)
 			h.waitDone()
-			assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
+			assert.Equal(t, "[done] My thread", h.thread().Title)
 			assert.Empty(t, h.thread().PinnedAt)
 			assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
 				"thread.mark-unread"}, h.commands())
@@ -922,7 +938,7 @@ func TestT3BridgeDisableLeavesTheThread(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 		require.NotEmpty(t, h.thread().PinnedAt)
 
 		h.server.FailNext("orchestration.dispatchCommand", "OrchestrationV2DispatchCommandError")
@@ -942,12 +958,12 @@ func TestT3BridgeDisableLeavesTheThread(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 
 		h.server.FailNext("orchestration.dispatchCommand", "OrchestrationV2DispatchCommandError")
 		h.finish(runs.StatusFailed)
 		h.waitDone()
-		assert.Equal(t, "[loopai: failed] My thread", h.thread().Title, "the final state is written once more")
+		assert.Equal(t, "[failed] My thread", h.thread().Title, "the final state is written once more")
 		assert.Empty(t, h.thread().PinnedAt)
 		commands := h.commands()
 		assert.Equal(t, "thread.mark-unread", commands[len(commands)-1], "the finished thread is marked unread last")
@@ -960,7 +976,7 @@ func TestT3BridgeDisableLeavesTheThread(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread", PinnedAt: pinned}, false)
 		h.start()
 		h.task(1)
-		h.waitTitle("[loopai: task 1/2] My thread")
+		h.waitTitle("[task 1/2] My thread")
 
 		h.server.FailNext("orchestration.dispatchCommand", "OrchestrationV2DispatchCommandError")
 		h.task(2)
@@ -975,14 +991,14 @@ func TestT3BridgeStopIsBounded(t *testing.T) {
 	h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 	h.start()
 	h.task(1)
-	h.waitTitle("[loopai: task 1/2] My thread")
+	h.waitTitle("[task 1/2] My thread")
 	h.server.Stall("orchestration.getThreadProjection")
 	h.finish(runs.StatusSucceeded)
 
 	started := time.Now()
 	h.bridge.stop(200 * time.Millisecond)
 	assert.Less(t, time.Since(started), 5*time.Second, "a server that never answers does not hold the run's exit")
-	assert.Equal(t, "[loopai: task 1/2] My thread", h.thread().Title)
+	assert.Equal(t, "[task 1/2] My thread", h.thread().Title)
 }
 
 func TestT3BridgeFatal(t *testing.T) {
@@ -1031,6 +1047,10 @@ func TestT3TitleState(t *testing.T) {
 		{name: "review", snap: runs.Snapshot{Phase: status.PhaseReview, Task: 2, TaskTotal: 2}, want: "review"},
 		{name: "external review", snap: runs.Snapshot{Phase: status.PhaseExternalReview}, want: "external review"},
 		{name: "external evaluation", snap: runs.Snapshot{Phase: status.PhaseExternalEval}, want: "external review"},
+		{name: "external review iteration", snap: runs.Snapshot{Phase: status.PhaseExternalReview, ExternalIteration: 2},
+			want: "external review 2"},
+		{name: "external evaluation of an iteration", snap: runs.Snapshot{Phase: status.PhaseExternalEval,
+			ExternalIteration: 3}, want: "external review 3"},
 		{name: "finalize", snap: runs.Snapshot{Phase: status.PhaseFinalize}, want: "finalize"},
 		{name: "report", snap: runs.Snapshot{Phase: status.PhaseReport}, want: "report"},
 		{name: "limit wait", snap: runs.Snapshot{Phase: status.PhaseLimitWait, Task: 1, TaskTotal: 2}, want: "limit wait"},
@@ -1049,26 +1069,49 @@ func TestT3TitleState(t *testing.T) {
 
 func TestT3PrefixedTitle(t *testing.T) {
 	tests := []struct{ title, want string }{
-		{"My thread", "[loopai: done] My thread"},
-		{"[loopai: task 1/2] My thread", "[loopai: done] My thread"},
-		{"[loopai: task 1/2]My thread", "[loopai: done] My thread"},
-		{"[loopai: task 1/2] [loopai: review] My thread", "[loopai: done] My thread"},
-		{"[loopai: task 1/2]", "[loopai: done]"},
-		{"", "[loopai: done]"},
-		{"My [loopai: x] thread", "[loopai: done] My [loopai: x] thread"},
-		{"[loopai] thread", "[loopai: done] [loopai] thread"},
+		{"My thread", "[done] My thread"},
+		{"[task 1/2] My thread", "[done] My thread"},
+		{"[task 1/2]My thread", "[done] My thread"},
+		{"[task 1/2] [review] My thread", "[done] My thread"},
+		{"[task 1/2]", "[done]"},
+		{"", "[done]"},
+		{"My [loopai: x] thread", "[done] My [loopai: x] thread"},
+		{"[loopai] thread", "[done] [loopai] thread"},
+		{"[external review 2] My thread", "[done] My thread"},
+		{"[loopai: external review] My thread", "[done] My thread"},
+		{"[loopai: task 1/2] [review] My thread", "[done] My thread"},
+		{"[WIP] My thread", "[done] [WIP] My thread"},
+		{"[task] My thread", "[done] [task] My thread"},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.want, t3PrefixedTitle("done", tc.title), "title %q", tc.title)
 	}
 }
 
+// TestT3TitlePrefixMatchesEveryState pins t3TitlePrefix to t3TitleState: a state the prefix does
+// not recognize would be stacked on the next transition instead of replaced.
+func TestT3TitlePrefixMatchesEveryState(t *testing.T) {
+	snaps := []runs.Snapshot{
+		{Phase: status.PhaseTask, Task: 3, TaskTotal: 7}, {Phase: status.PhaseTask, Task: 2},
+		{Phase: status.PhaseReview}, {Phase: status.PhaseExternalReview},
+		{Phase: status.PhaseExternalReview, ExternalIteration: 12}, {Phase: status.PhaseFinalize},
+		{Phase: status.PhaseReport}, {Phase: status.PhaseLimitWait},
+		{Finish: &runs.Finish{Status: runs.StatusSucceeded}}, {Finish: &runs.Finish{Status: runs.StatusFailed}},
+		{Finish: &runs.Finish{Status: runs.StatusStopped}},
+	}
+	for _, snap := range snaps {
+		state := t3TitleState(&snap)
+		require.NotEmpty(t, state)
+		assert.Equal(t, "My thread", t3BaseTitle(t3PrefixedTitle(state, "My thread")), "state %q", state)
+	}
+}
+
 func TestT3BaseTitle(t *testing.T) {
 	tests := []struct{ title, want string }{
 		{"My thread", "My thread"},
-		{"[loopai: task 1/2] My thread", "My thread"},
-		{"[loopai: task 1/2] [loopai: review] My thread", "My thread"},
-		{"[loopai: task 1/2]", ""},
+		{"[task 1/2] My thread", "My thread"},
+		{"[task 1/2] [review] My thread", "My thread"},
+		{"[task 1/2]", ""},
 		{"My [loopai: x] thread", "My [loopai: x] thread"},
 	}
 	for _, tc := range tests {

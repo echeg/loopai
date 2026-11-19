@@ -162,6 +162,9 @@ type Snapshot struct {
 	Tasks     []TaskState
 	Stages    []StageState
 	Section   SectionMark
+	// ExternalIteration is the latest external or custom reviewer iteration of the external review
+	// block in progress, kept through the evaluation that follows it; 0 before the block's first.
+	ExternalIteration int
 	// LimitWait is the configured wait of the limit wait in progress, and LimitWaitSince when it
 	// began; both are zero outside a limit wait.
 	LimitWait      time.Duration
@@ -200,6 +203,9 @@ func (s *Snapshot) Apply(ev Event) {
 		s.applyTaskStatuses(ev.Statuses)
 	case EventReview:
 		s.Section = SectionMark{Type: EventReview, Kind: ev.Kind, N: ev.Iteration, Label: ev.Label}
+		if ev.Kind == ReviewExternal || ev.Kind == ReviewCustom {
+			s.ExternalIteration = ev.Iteration
+		}
 		return
 	case EventFinish:
 		s.applyFinish(ev)
@@ -238,6 +244,10 @@ func (s *Snapshot) applyPhase(ev Event) {
 	s.LimitWait, s.LimitWaitSince = 0, time.Time{}
 	previous := s.workPhase
 	s.workPhase = ev.Phase
+	if !externalPhase(ev.Phase) || !externalPhase(previous) {
+		// a new external review block numbers its iterations from 1 again
+		s.ExternalIteration = 0
+	}
 	if ev.Phase != status.PhaseTask {
 		s.taskRunning = false
 	}
@@ -256,6 +266,12 @@ func (s *Snapshot) applyPhase(ev Event) {
 		s.tasksComplete = true
 		s.enterStage(stage)
 	}
+}
+
+// externalPhase reports whether phase belongs to an external review block: a reviewer iteration or
+// the evaluation of its findings.
+func externalPhase(phase status.Phase) bool {
+	return phase == status.PhaseExternalReview || phase == status.PhaseExternalEval
 }
 
 // enterStage marks stage active, and the stage active before it and every stage earlier in the

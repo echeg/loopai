@@ -35,7 +35,7 @@ removed = ("--t3-launch", "--t3-progress-thread", "--no-t3", "resolve-thread", "
 report_phrases = (
     ("Mode 1", "loopai --attach"),
     ("Mode 1", "fresh token"),
-    ("Mode 1", "[loopai: …] title prefix"),
+    ("Mode 1", "status title prefix, such as [task 3/7]"),
     ("Mode 2", "t3-thread://v1/<threadId>"),
     ("Mode 2", "type `resume` in that thread"),
     ("Mode 2", "switch that thread's model to Claude or Codex"),

@@ -642,7 +642,7 @@ func TestDetachT3TokenLeavesNoTrace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, runs.StatusSucceeded, outcome.Status, "console log:\n%s", readTestFile(t, desc.ConsoleLog))
 	th, _ := s.Thread(thread)
-	require.Equal(t, "[loopai: done] My thread", th.Title, "the bridge worked with the token")
+	require.Equal(t, "[done] My thread", th.Title, "the bridge worked with the token")
 	require.NotEmpty(t, s.Handshakes())
 	assert.Equal(t, "Bearer "+token, s.Handshakes()[0].Authorization)
 

@@ -34,9 +34,12 @@ const (
 // build the UI's launch context for its terminal.
 var errT3ProjectNotListed = errors.New("T3 Code does not list the thread's project")
 
-// t3TitlePrefix matches the title prefix the bridge writes, [loopai: <state>], with one following
-// space.
-var t3TitlePrefix = regexp.MustCompile(`^\[loopai: [^\]]*\] ?`)
+// t3TitlePrefix matches the title prefix the bridge writes, [<state>], with one following space. It
+// names every state t3TitleState returns rather than any bracket, so a user's own leading [WIP] is
+// kept, and it also matches the [loopai: <state>] form earlier builds wrote, so a thread one of them
+// titled gets its prefix replaced rather than stacked.
+var t3TitlePrefix = regexp.MustCompile(`^\[(?:loopai: [^\]]*|task \d+(?:/\d+)?|review|external review(?: \d+)?|` +
+	`limit wait|finalize|report|done|failed|stopped)\] ?`)
 
 // newT3Bridge starts the Mode 1 bridge of a detached run and returns its bounded stop; TestMain
 // replaces it with a no-op, so no test reaches a T3 server unless it asks for one.
@@ -96,7 +99,7 @@ func startT3Bridge(cfg t3BridgeConfig) func() {
 }
 
 // t3Bridge mirrors one attempt of a detached run into the T3 thread it was started from: a
-// replaceable [loopai: <state>] title prefix written on transitions, a pin held while the run is
+// replaceable [<state>] title prefix written on transitions, a pin held while the run is
 // live, a terminal tab that follows the run through loopai --attach and is restored after a T3
 // restart, and, as its last command, a mark-unread that gives the finished thread T3's "Done" badge
 // until the user opens it. It never affects the run: an error T3 answers a terminal request with stops only the
@@ -770,7 +773,8 @@ func t3ServerStart(rt t3.Runtime) string {
 }
 
 // t3TitleState is the state a run's title prefix shows: the final done, failed, or stopped, the
-// limit wait, the task and the task count, or the review stage; empty when no state is known yet.
+// limit wait, the task and the task count, the review stage, or the external review with its
+// iteration; empty when no state is known yet. t3TitlePrefix must match every state it returns.
 func t3TitleState(s *runs.Snapshot) string {
 	if s.Finish != nil {
 		switch s.Finish.Status {
@@ -790,6 +794,9 @@ func t3TitleState(s *runs.Snapshot) string {
 	case status.PhaseReview:
 		return "review"
 	case status.PhaseExternalReview, status.PhaseExternalEval:
+		if s.ExternalIteration > 0 {
+			return "external review " + strconv.Itoa(s.ExternalIteration)
+		}
 		return "external review"
 	case status.PhaseFinalize:
 		return "finalize"
@@ -812,10 +819,10 @@ func t3TaskState(n, m int) string {
 	return fmt.Sprintf("task %d/%d", min(n, m), m)
 }
 
-// t3PrefixedTitle is title with every leading [loopai: …] prefix replaced by the prefix of state;
-// the prefix alone when nothing else is left.
+// t3PrefixedTitle is title with every leading state prefix replaced by the prefix of state; the
+// prefix alone when nothing else is left.
 func t3PrefixedTitle(state, title string) string {
-	prefix := "[loopai: " + state + "]"
+	prefix := "[" + state + "]"
 	base := t3BaseTitle(title)
 	if base == "" {
 		return prefix
@@ -823,7 +830,7 @@ func t3PrefixedTitle(state, title string) string {
 	return prefix + " " + base
 }
 
-// t3BaseTitle is title without its leading [loopai: …] prefixes, trimmed.
+// t3BaseTitle is title without its leading state prefixes, trimmed.
 func t3BaseTitle(title string) string {
 	base := title
 	for loc := t3TitlePrefix.FindStringIndex(base); loc != nil; loc = t3TitlePrefix.FindStringIndex(base) {

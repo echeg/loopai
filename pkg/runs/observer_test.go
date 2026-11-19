@@ -397,6 +397,36 @@ func TestSnapshotSectionsLimitWaitAndFinish(t *testing.T) {
 	assert.Equal(t, 11, s.Seq)
 }
 
+func TestSnapshotExternalIteration(t *testing.T) {
+	review := func(kind string, n int) Event { return Event{Type: EventReview, Kind: kind, Iteration: n} }
+	tests := []struct {
+		name   string
+		events []Event
+		want   int
+	}{
+		{name: "before the first iteration", events: []Event{phaseEvent(status.PhaseExternalReview)}, want: 0},
+		{name: "reviewer iteration", events: []Event{phaseEvent(status.PhaseExternalReview), review(ReviewExternal, 1),
+			review(ReviewExternal, 2)}, want: 2},
+		{name: "custom iteration", events: []Event{phaseEvent(status.PhaseExternalReview), review(ReviewCustom, 3)}, want: 3},
+		{name: "kept through the evaluation", events: []Event{phaseEvent(status.PhaseExternalReview),
+			review(ReviewExternal, 2), phaseEvent(status.PhaseExternalEval), review(ReviewEvaluation, 0)}, want: 2},
+		{name: "kept through a limit wait", events: []Event{phaseEvent(status.PhaseExternalReview),
+			review(ReviewExternal, 2), phaseEvent(status.PhaseLimitWait), phaseEvent(status.PhaseExternalReview)}, want: 2},
+		{name: "internal review leaves it", events: []Event{phaseEvent(status.PhaseReview), review(ReviewInternal, 4)},
+			want: 0},
+		{name: "a new block starts over", events: []Event{phaseEvent(status.PhaseExternalReview),
+			review(ReviewExternal, 3), phaseEvent(status.PhaseTask), phaseEvent(status.PhaseExternalReview)}, want: 0},
+		{name: "a new attempt starts over", events: []Event{phaseEvent(status.PhaseExternalReview),
+			review(ReviewExternal, 3), {Type: EventAttemptStart}}, want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := Fold(tc.events)
+			assert.Equal(t, tc.want, s.ExternalIteration)
+		})
+	}
+}
+
 func TestSnapshotTaskSection(t *testing.T) {
 	s := Fold([]Event{
 		{Seq: 1, Type: EventAttemptStart, TaskTotal: 3},

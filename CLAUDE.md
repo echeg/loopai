@@ -1204,7 +1204,7 @@ single-quoted in shell text. `pkg/t3` speaks T3 Code's orchestration protocol 2:
 an `Ack` after every stream chunk (the server stalls otherwise), and a fresh `commandId` per command;
 the origin comes from `<T3 home>/userdata/server-runtime.json`, re-read on every reconnect, or
 `LOOPAI_T3_URL`, and a 426 or undecodable reply is the typed `t3.ErrProtocolUnsupported`. The bridge
-follows the journal with `FollowUntilFinish`, writes `[loopai: <state>]` title prefixes on transitions
+follows the journal with `FollowUntilFinish`, writes `[<state>]` title prefixes on transitions (`external review <n>` from `Snapshot.ExternalIteration`; `t3TitlePrefix` lists every state plus the legacy `[loopai: …]` form, so a user's `[WIP]` survives)
 only (`thread.metadata.update` carrying the title alone, read first so the user's name survives, the
 first one after waiting up to about 2 minutes for a pending `titleRegeneration`, a wait a finished
 attempt skips so its final title lands inside `t3BridgeStopTimeout`), pins only an

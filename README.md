@@ -151,7 +151,7 @@ The plugin provides eleven skills:
   it forwards `--task-model`, `--review-model`, and `--external-reviewers`
   when given
 - `loopai:loopai-t3` starts a plan from a T3 Code thread as a detached run, shown either in a
-  terminal tab of that thread with a `[loopai: …]` title prefix or in a new loopai thread that shows
+  terminal tab of that thread with a status title prefix such as `[task 3/7]` or in a new loopai thread that shows
   Working until the run ends. It forwards the same three flags
 - `loopai:loopai-plan` creates an executable implementation plan
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
@@ -171,7 +171,7 @@ The plugin provides eleven skills:
 
 In Claude Code and Codex alike, `loopai-t3` asks how T3 Code should show the run. A terminal in
 this thread follows the run while the conversation stays free, with a title prefix such as
-`[loopai: task 3/7]` that keeps the thread's name; it needs a `full-access` thread outside an agent
+`[task 3/7]` that keeps the thread's name; it needs a `full-access` thread outside an agent
 sandbox. A new loopai thread shows Working for the whole run and ends with the report summary, after
 which you switch its model to Claude or Codex to discuss the result. See
 [Mode 1](docs/t3-code.md#mode-1-a-terminal-in-this-thread) and
@@ -1479,7 +1479,7 @@ its cost. See [docs/host-integration.md](docs/host-integration.md).
 [T3 Code](https://t3.codes) shows a detached run in one of two modes, both started by the `loopai-t3`
 skill. In Mode 1, `loopai --detach --t3-thread <thread-id> <plan>` with a T3 Code token in
 `LOOPAI_T3_TOKEN` opens a terminal tab in that thread which follows the run, writes a replaceable
-`[loopai: task 3/7]` title prefix that keeps the thread's name, pins the thread while the run is live,
+`[task 3/7]` title prefix that keeps the thread's name, pins the thread while the run is live,
 marks it unread when the run finishes so the sidebar shows a "Done" badge, and reopens its terminal
 after a T3 Code restart. In Mode 2, a thread on the loopai provider, a T3 Code
 ACP Registry instance whose executable is `loopai-acp` (which runs `loopai --acp`), shows Working for
